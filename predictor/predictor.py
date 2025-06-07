@@ -25,7 +25,7 @@ class DataSimulation:
             points.append(noisy_pt)
         return points, times.tolist()
 
-class NewtonLawTrajectoryPrediction:
+class NewtonianLawTrajectoryPrediction:
     """
     Class to estimate a 3D parabolic trajectory from noisy observations.
     Includes methods to simulate data, fit via RANSAC, refine by least squares,
@@ -135,7 +135,7 @@ def main():
     points = np.array(points)
     times = np.array(times)
 
-    ntp = NewtonLawTrajectoryPrediction()
+    ntp = NewtonianLawTrajectoryPrediction()
     # p0, v0, inliers = ntp.fit_ransac(points, times)
     # p0_refined, v0_refined = ntp.refine_least_squares(points[inliers], times[inliers])
 
