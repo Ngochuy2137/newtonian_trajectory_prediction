@@ -25,7 +25,7 @@ class DataSimulation:
             points.append(noisy_pt)
         return points, times.tolist()
 
-class NewtonTrajectoryPrediction:
+class NewtonLawTrajectoryPrediction:
     """
     Class to estimate a 3D parabolic trajectory from noisy observations.
     Includes methods to simulate data, fit via RANSAC, refine by least squares,
@@ -38,6 +38,9 @@ class NewtonTrajectoryPrediction:
         self.gravity = gravity
         self.threshold = ransac_threshold
         self.max_iters = ransac_iters
+
+        self._p0 = None
+        self._v0 = None
     
     # Step 1: Tìm phương trình Parabol dựa vào 2 điểm dữ liệu
     def _fit_parabola_two_points(self, p1: np.ndarray, t1: float,
@@ -108,42 +111,39 @@ class NewtonTrajectoryPrediction:
         theta, _, _, _ = np.linalg.lstsq(X, Y, rcond=None)
         return theta[:3], theta[3:] # p0, v0
 
-    def predict(self,
-                p0: np.ndarray,
-                v0: np.ndarray,
-                num_points: int,
-                dt: float) -> List[np.ndarray]:
+    def update_model(self, points_np, times_np):
+        p0, v0, inliers = self.fit_ransac(points_np, times_np)
+        p0_refined, v0_refined = self.refine_least_squares(points_np[inliers], times_np[inliers])
+        self._p0 = p0_refined
+        self._v0 = v0_refined
+
+    def predict(self, num_points: int, dt: float) -> List[np.ndarray]:
         """
         Predict future trajectory points at uniform time intervals.
         """
-        return [p0 + v0 * t + 0.5 * self.gravity * t**2
-                for t in np.linspace(0, dt*(num_points-1), num_points)]
+        return np.array([self._p0 + self._v0 * t + 0.5 * self.gravity * t**2
+                for t in np.linspace(0, dt*(num_points-1), num_points)])
 
 def main():
     dsim = DataSimulation()
     points, times = dsim.simulate_data(
         p0=np.array([0.0, 0.0, 0.0]),
-        v0=np.array([1.0, 1.0, 10.0]),
+        v0=np.array([10.0, 1.0, 5.0]),
         times=np.linspace(0, 2, 20),
-        noise_std=0.01
+        noise_std=0.1
     )
     points = np.array(points)
     times = np.array(times)
 
-    ntp = NewtonTrajectoryPrediction()
-    p0, v0, inliers = ntp.fit_ransac(points, times)
-    print("Initial p0:", p0)
-    print("Initial v0:", v0)
-    print("Inliers:", inliers)
-    p0_refined, v0_refined = ntp.refine_least_squares(points[inliers], times[inliers])
-    print("Refined p0:", p0_refined)
-    print("Refined v0:", v0_refined)
-    predicted_points = ntp.predict(p0_refined, v0_refined, num_points=100, dt=0.05)
-    predicted_points = np.array(predicted_points)
+    ntp = NewtonLawTrajectoryPrediction()
+    # p0, v0, inliers = ntp.fit_ransac(points, times)
+    # p0_refined, v0_refined = ntp.refine_least_squares(points[inliers], times[inliers])
 
+    ntp.update_model(points, times)
+    predicted_points = ntp.predict(num_points=30, dt=0.1)
     print('points shape:', points.shape)
     print('predicted_points shape:', predicted_points.shape)
-    global_plotter.plot_trajectory_dataset_plotly(trajectories=[points, predicted_points])
+    global_plotter.plot_trajectory_dataset_plotly(trajectories=[points, predicted_points], title='Newton law Trajectory prediction')
 
 if __name__ == "__main__":
     main()
