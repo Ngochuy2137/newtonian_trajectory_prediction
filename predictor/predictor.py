@@ -34,13 +34,14 @@ class NewtonianLawTrajectoryPrediction:
     def __init__(self,
                  gravity: np.ndarray = np.array([0.0, 0.0, -9.81]),
                  ransac_threshold: float = 0.05,
-                 ransac_iters: int = 100):
+                 ransac_iters: int = 100, seed: int = 42):
         self.gravity = gravity
         self.threshold = ransac_threshold
         self.max_iters = ransac_iters
 
         self._p0 = None
         self._v0 = None
+        np.random.seed(seed)  # Set random seed for reproducibility
     
     # Step 1: Tìm phương trình Parabol dựa vào 2 điểm dữ liệu
     def _fit_parabola_two_points(self, p1: np.ndarray, t1: float,
@@ -123,6 +124,22 @@ class NewtonianLawTrajectoryPrediction:
         """
         return np.array([self._p0 + self._v0 * t + 0.5 * self.gravity * t**2
                 for t in np.linspace(0, dt*(num_points-1), num_points)])
+    
+    def predict_points_at_timestamps(self, t_arr: np.ndarray) -> np.ndarray:
+        """
+        Predict point(s) at time t.
+        args:
+          t: float or 1D-array of floats
+        returns:
+          nếu t là scalar  -> array shape (d,)
+          nếu t là array   -> array shape (len(t), d)
+        """
+        t_arr = np.asarray(t_arr)                      # chuyển về ndarray
+        # thêm chiều để broadcast: t_arr[..., None] có shape (n,1) hoặc ()->[ ]
+        pts = self._p0 + self._v0 * t_arr[..., None] + 0.5 * self.gravity * (t_arr[..., None]**2)
+        return pts
+
+import numpy as np
 
 def main():
     dsim = DataSimulation()
