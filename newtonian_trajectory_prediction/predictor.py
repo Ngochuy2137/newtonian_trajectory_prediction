@@ -118,12 +118,22 @@ class NewtonianTrajectoryPrediction:
         self._p0 = p0_refined
         self._v0 = v0_refined
 
-    def predict(self, num_points: int, dt: float) -> List[np.ndarray]:
+    def predict(self, num_points: int, dt: float) -> np.ndarray:
         """
-        Predict future trajectory points at uniform time intervals.
+        Predict future trajectory points in 3D at uniform time intervals.
+        Trả về mảng NumPy shape (num_points, 3).
         """
-        return np.array([self._p0 + self._v0 * t + 0.5 * self.gravity * t**2
-                for t in np.linspace(0, dt*(num_points-1), num_points)])
+        # 1) Khởi tạo mảng thời gian
+        t_arr = np.linspace(0, dt*(num_points-1), num_points)  # shape (N,)
+        # 2) Chuyển thành (N,1) để broadcasting
+        t_col = t_arr[:, None]  # shape (N,1)
+        # 3) Tính positions vectorized
+        positions = (
+            self._p0
+            + self._v0 * t_col
+            + 0.5 * self.gravity * (t_col**2)
+        )  # shape (N,3)
+        return positions
     
     def predict_points_at_timestamps(self, t_arr: np.ndarray) -> np.ndarray:
         """
