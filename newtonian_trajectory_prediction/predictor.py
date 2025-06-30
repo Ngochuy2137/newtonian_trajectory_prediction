@@ -117,6 +117,7 @@ class NewtonianTrajectoryPrediction:
         p0_refined, v0_refined = self.refine_least_squares(points_np[inliers], times_np[inliers])
         self._p0 = p0_refined
         self._v0 = v0_refined
+        return p0_refined, v0_refined
 
     def predict(self, num_points: int, dt: float) -> np.ndarray:
         """
