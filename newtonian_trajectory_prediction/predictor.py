@@ -1,142 +1,86 @@
-# trajectory_estimator.py
 import numpy as np
-from typing import List, Tuple
-
-from python_utils.plotter import Plotter
-
-global_plotter = Plotter()
-
-class DataSimulation:
-    def __init__(self, gravity: np.ndarray = np.array([0.0, 0.0, -9.81]),):
-        self.gravity = gravity
-    def simulate_data(self,
-                      p0: np.ndarray,
-                      v0: np.ndarray,
-                      times: np.ndarray,
-                      noise_std: float = 0.05) -> Tuple[List[np.ndarray], List[float]]:
-        """
-        Generate noisy observations along a true parabola defined by p0, v0.
-        returns (points, times)
-        """
-        points = []
-        for t in times:
-            true_pt = p0 + v0 * t + 0.5 * self.gravity * t**2
-            noisy_pt = true_pt + np.random.normal(scale=noise_std, size=3)
-            points.append(noisy_pt)
-        return points, times.tolist()
 
 class NewtonianTrajectoryPrediction:
     """
-    Class to estimate a 3D parabolic trajectory from noisy observations.
-    Includes methods to simulate data, fit via RANSAC, refine by least squares,
-    and predict future trajectory points.
+    Ước tính parabol 3D dạng p(t) = ½ g t² + v t + p bằng RANSAC + Least-Squares
+    Hệ tọa độ z-up, gravity kéo xuống theo -z.
     """
-    def __init__(self,
-                 gravity: np.ndarray = np.array([0.0, 0.0, -9.81]),
-                 ransac_threshold: float = 0.05,
-                 ransac_iters: int = 100, seed: int = 42):
+    def __init__(
+        self,
+        gravity: np.ndarray = np.array([0.0, 0.0, -9.81]),
+        confidence: float = 0.999,
+        num_max_ransac_iter: int = 100,
+        inlier_threshold: float = 0.1,
+        seed=42
+    ):
         self.gravity = gravity
-        self.threshold = ransac_threshold
-        self.max_iters = ransac_iters
-
-        self._p0 = None
-        self._v0 = None
+        self.confidence = confidence
+        self.num_max_iter = num_max_ransac_iter
+        self.inlier_threshold = inlier_threshold
         np.random.seed(seed)  # Set random seed for reproducibility
-    
-    # Step 1: Tìm phương trình Parabol dựa vào 2 điểm dữ liệu
-    def _fit_parabola_two_points(self, p1: np.ndarray, t1: float,
-                                 p2: np.ndarray, t2: float) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Fit parabola p(t)=p0+v0*t+0.5*g*t^2 from two observations
-        """
-        A = np.zeros((6,6))
-        b = np.zeros(6)
-        # Construct linear system for p0 (3) and v0 (3)
-        # For each point: p_i = p0 + v0 * t_i + 0.5*g*t_i^2
-        # => p_i - 0.5*g*t_i^2 = [I, t_i*I] [p0; v0]
-        def build_row(pt, ti, row_offset):
-            y = pt - 0.5 * self.gravity * ti**2
-            A[row_offset:row_offset+3, 0:3] = np.eye(3)
-            A[row_offset:row_offset+3, 3:6] = np.eye(3) * ti
-            b[row_offset:row_offset+3] = y
-            
-        build_row(p1, t1, 0)
-        build_row(p2, t2, 3)
-        x, _, _, _ = np.linalg.lstsq(A, b, rcond=None)
-        return x[:3], x[3:] # p0, v0
 
-    # Step 2: Tìm các điểm dữ liệu gần nhất với parabol (Tìm inliers)
-    def fit_ransac(self,
-                   points: List[np.ndarray],
-                   times: List[float]) -> Tuple[np.ndarray, np.ndarray, List[int]]:
+    def minimal_solution(self, points: np.ndarray, times: np.ndarray):
+        t0, t1 = times
+        p0, p1 = points
+        p0_gc = p0 - 0.5 * self.gravity * t0**2
+        p1_gc = p1 - 0.5 * self.gravity * t1**2
+        v = (p1_gc - p0_gc) / (t1 - t0)
+        p = p0_gc - v * t0
+        return p, v
+
+    def least_squares_solution(self, points: np.ndarray, times: np.ndarray):
+        P = points - 0.5 * self.gravity.reshape((1,3)) * times.reshape((-1,1))**2
+        n    = len(times)
+        t    = times.sum()
+        t2   = (times**2).sum()
+        p_sum  = P.sum(axis=0)
+        tp_sum = (P * times.reshape((-1,1))).sum(axis=0)
+        denom = t**2 - n * t2
+        p_opt = (t * tp_sum - p_sum * t2) / denom
+        v_opt = (t * p_sum   - n     * tp_sum) / denom
+        return p_opt, v_opt
+
+    def compute_inliers(self, points: np.ndarray, times: np.ndarray, p: np.ndarray, v: np.ndarray):
+        P    = points - 0.5 * self.gravity.reshape((1,3)) * times.reshape((-1,1))**2
+        pred = p.reshape((1,3)) + v.reshape((1,3)) * times.reshape((-1,1))
+        errs = P - pred
+        return (errs**2).sum(axis=1) < self.inlier_threshold**2
+
+    def _ransac_iters(self, outlier_prob: float):
+        return int(np.log(1-self.confidence) / np.log(1-(1-outlier_prob)**2))
+
+    def fit_ransac(self, points_3d: np.ndarray, times: np.ndarray):
         """
-        Perform RANSAC to find the parabola with most inliers.
-        returns p0, v0, inlier_indices
+        Thực hiện RANSAC + Least-Squares để tìm p_init, v_init.
+        Trả về (p_init, v_init, inlier_mask)
         """
-        best_inliers = []
-        best_p0, best_v0 = None, None
-        n = len(points)
-        for _ in range(self.max_iters):
-            i1, i2 = np.random.choice(n, 2, replace=False)
-            p0_candidate, v0_candidate = self._fit_parabola_two_points(
-                points[i1], times[i1], points[i2], times[i2]
-            )
-            inliers = []
-            for i, (p, t) in enumerate(zip(points, times)):
-                pred = p0_candidate + v0_candidate * t + 0.5 * self.gravity * t**2
-                if np.linalg.norm(p - pred) <= self.threshold:
-                    inliers.append(i)
-            if len(inliers) > len(best_inliers):
+        best_inliers = np.zeros(len(points_3d), dtype=bool)
+        max_inliers  = 0
+        num_iter = self.num_max_iter
+
+        for _ in range(num_iter):
+            idx = np.random.choice(len(points_3d), size=2, replace=False)
+            p0, v0 = self.minimal_solution(points_3d[idx], times[idx])
+
+            inliers = self.compute_inliers(points_3d, times, p0, v0)
+            n_in = inliers.sum()
+
+            if n_in > max_inliers:
+                max_inliers  = n_in
                 best_inliers = inliers
-                best_p0, best_v0 = p0_candidate, v0_candidate
-        return best_p0, best_v0, best_inliers
 
-    # Step 3: Tính toán lại p0, v0 từ cụm các điểm inliers được tìm ra ở step 4 dựa vào least squares
-    def refine_least_squares(self,
-                             points: List[np.ndarray],
-                             times: List[float]) -> Tuple[np.ndarray, np.ndarray]:
-        """
-        Refine parabola parameters using all inliers via least squares.
-        returns refined p0, v0
-        """
-        N = len(points)             # là số lượng điểm inliers
-        Y = np.zeros(3 * N)         # là vector chứa các điểm inliers, mỗi điểm có 3 chiều
-        X = np.zeros((3 * N, 6))    # là ma trận kích thước (3N)x6: 6 chiều cho p0 và v0
+            outlier_prob = np.clip(1 - n_in / len(points_3d), 1e-6, 1-1e-6)
+            num_iter = min(self._ransac_iters(outlier_prob), self.num_max_iter)
 
-        # Setup ma trận X và vector Y bằng cách duyệt qua từng điểm inliers
-        for i, (p, t) in enumerate(zip(points, times)):
-            y = p - 0.5 * self.gravity * t**2
-            Y[3*i:3*i+3] = y
-            X[3*i:3*i+3, 0:3] = np.eye(3)           # np.eye(3) là ma trận đơn vị 3x3
-            X[3*i:3*i+3, 3:6] = np.eye(3) * t
-        theta, _, _, _ = np.linalg.lstsq(X, Y, rcond=None)
-        return theta[:3], theta[3:] # p0, v0
+        # tinh chỉnh cuối cùng trên tập inliers tốt nhất
+        p_opt, v_opt = self.least_squares_solution(points_3d[best_inliers], times[best_inliers])
+        return p_opt, v_opt, best_inliers
 
     def update_model(self, points_np, times_np):
         p0, v0, inliers = self.fit_ransac(points_np, times_np)
-        p0_refined, v0_refined = self.refine_least_squares(points_np[inliers], times_np[inliers])
-        self._p0 = p0_refined
-        self._v0 = v0_refined
-        return p0_refined, v0_refined
-
-    def predict(self, num_points: int, dt: float) -> np.ndarray:
-        """
-        Predict future trajectory points in 3D at uniform time intervals.
-        Trả về mảng NumPy shape (num_points, 3).
-        """
-        # 1) Khởi tạo mảng thời gian
-        t_arr = np.linspace(0, dt*(num_points-1), num_points)  # shape (N,)
-        # 2) Chuyển thành (N,1) để broadcasting
-        t_col = t_arr[:, None]  # shape (N,1)
-        # 3) Tính positions vectorized
-        positions = (
-            self._p0
-            + self._v0 * t_col
-            + 0.5 * self.gravity * (t_col**2)
-        )  # shape (N,3)
-        return positions
+        return p0, v0
     
-    def predict_points_at_timestamps(self, t_arr: np.ndarray) -> np.ndarray:
+    def predict_points_at_timestamps(self, t_arr: np.ndarray, p0: np.ndarray, v0: np.ndarray) -> np.ndarray:
         """
         Predict point(s) at time t.
         args:
@@ -147,35 +91,48 @@ class NewtonianTrajectoryPrediction:
         """
         t_arr = np.asarray(t_arr)                      # chuyển về ndarray
         # thêm chiều để broadcast: t_arr[..., None] có shape (n,1) hoặc ()->[ ]
-        pts = self._p0 + self._v0 * t_arr[..., None] + 0.5 * self.gravity * (t_arr[..., None]**2)
+        pts = p0 + v0 * t_arr[..., None] + 0.5 * self.gravity * (t_arr[..., None]**2)
         return pts
 
-import numpy as np
 
 def main():
-    dsim = DataSimulation()
-    points, times = dsim.simulate_data(
-        p0=np.array([0.0, 0.0, 0.0]),
-        v0=np.array([10.0, 1.0, 5.0]),
-        times=np.linspace(0, 2, 20),
-        noise_std=0.1
+    from python_utils.plotter import Plotter
+    util_plotter = Plotter()
+
+    ## ----- 1. Tạo quỹ đạo mẫu trong hệ z-up, dấu dương hướng lên
+    g_world = np.array([0.0, 0.0, -9.81])    # gravity vector in z-up (m/s^2)
+    p0_world = np.array([0.0, 0.0, 1.0])     # Vị trí ban đầu (x, y, z)
+    v0_world = np.array([2.0, 0.0, 5.0])     # Vận tốc ban đầu (vx, vy, vz)
+
+    #   Thời điểm lấy mẫu
+    times = np.linspace(0, 0.5, 20)          # 20 điểm từ t=0 đến t=1.5s
+
+    #   Tính quỹ đạo lý thuyết trong hệ world, hệ z-up, nhìn g_world thì biết
+    points_3d = 0.5 * g_world * times[:, None]**2 + v0_world * times[:, None] + p0_world
+    noise = np.random.normal(0.0, 0.01, points_3d.shape)  # Thêm nhiễu Gaussian
+    # points3d_fit += noise
+    # points_3d = points_3d + noise
+    # util_plotter.plot_trajectory_dataset_matplotlib(samples=[points_3d], title='Original Parabola Trajectory')   # OK
+
+
+
+    ## ----- 2. fit
+    ntp = NewtonianTrajectoryPrediction(
+        gravity=g_world,
+        confidence=0.999,
+        num_max_ransac_iter=100,
+        inlier_threshold=0.1
     )
-    points = np.array(points)
-    times = np.array(times)
+    p_init, v_init, inlier_mask = ntp.fit_ransac(
+        points_3d,
+        times)
+    t_query = np.linspace(0, 1, 39)        # 100 thời điểm nội suy
+    pred_seq = ntp.predict_points_at_timestamps(t_query, p_init, v_init)
+    util_plotter.plot_predictions_plotly(inputs=[points_3d], labels=[points_3d], predictions=[pred_seq])
+    print(f'Predicted p: ', np.array2string(p_init, precision=3))
+    print(f'Predicted v: ', np.array2string(v_init, precision=3))
 
-    ntp = NewtonianTrajectoryPrediction()
-    # p0, v0, inliers = ntp.fit_ransac(points, times)
-    # p0_refined, v0_refined = ntp.refine_least_squares(points[inliers], times[inliers])
 
-    ntp.update_model(points, times)
-    predicted_points = ntp.predict(num_points=30, dt=0.1)
-    print('points shape:', points.shape)
-    print('predicted_points shape:', predicted_points.shape)
-    global_plotter.plot_trajectory_dataset_plotly(trajectories=[points, predicted_points], title='Newton law Trajectory prediction')
 
 if __name__ == "__main__":
     main()
-
-
-    
-
