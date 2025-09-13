@@ -20,6 +20,10 @@ class NewtonianTrajectoryPrediction:
         np.random.seed(seed)  # Set random seed for reproducibility
 
     def minimal_solution(self, points: np.ndarray, times: np.ndarray):
+        '''
+        Giải hệ phương trình, tìm p_init, v_init của parabol đi qua 2 điểm (minimal case).
+        Note: chỉ có 1 nghiệm duy nhất vì parabol được constrainted bởi vector gravity g
+        '''
         t0, t1 = times
         p0, p1 = points
         p0_gc = p0 - 0.5 * self.gravity * t0**2
@@ -49,9 +53,10 @@ class NewtonianTrajectoryPrediction:
     def _ransac_iters(self, outlier_prob: float):
         return int(np.log(1-self.confidence) / np.log(1-(1-outlier_prob)**2))
 
-    def fit_ransac(self, points_3d: np.ndarray, times: np.ndarray):
+    def fit_ransac(self, points_3d: np.ndarray, times: np.ndarray, first_point_constraint=False):
         """
         Thực hiện RANSAC + Least-Squares để tìm p_init, v_init.
+        first_point_constraint: nếu True thì ép parabol luôn đi qua điểm đầu tiên (points_3d[0])
         Trả về (p_init, v_init, inlier_mask)
         """
         best_inliers = np.zeros(len(points_3d), dtype=bool)
@@ -59,12 +64,18 @@ class NewtonianTrajectoryPrediction:
         num_iter = self.num_max_iter
 
         for _ in range(num_iter):
-            idx = np.random.choice(len(points_3d), size=2, replace=False)
+            # chọn random 2 điểm để tính p, v của parabol đi qua 2 điểm đó
+            if first_point_constraint:
+                j = np.random.choice(len(points_3d) - 1) + 1   # chọn ngẫu nhiên từ 1..len-1
+                idx = np.array([0, j])                        # luôn chứa 0
+            else:
+                idx = np.random.choice(len(points_3d), size=2, replace=False)
+
             p0, v0 = self.minimal_solution(points_3d[idx], times[idx])
 
             inliers = self.compute_inliers(points_3d, times, p0, v0)
             n_in = inliers.sum()
-
+            # update inlier list if number of inliers is the most so far
             if n_in > max_inliers:
                 max_inliers  = n_in
                 best_inliers = inliers
@@ -76,10 +87,10 @@ class NewtonianTrajectoryPrediction:
         p_opt, v_opt = self.least_squares_solution(points_3d[best_inliers], times[best_inliers])
         return p_opt, v_opt, best_inliers
 
-    def update_model(self, points_np, times_np):
-        p0, v0, inliers = self.fit_ransac(points_np, times_np)
+    def update_model(self, points_np, times_np, first_point_constraint=False):
+        p0, v0, inliers = self.fit_ransac(points_np, times_np, first_point_constraint=first_point_constraint)
         return p0, v0
-    
+
     def predict_points_at_timestamps(self, t_arr: np.ndarray, p0: np.ndarray, v0: np.ndarray) -> np.ndarray:
         """
         Predict point(s) at time t.
